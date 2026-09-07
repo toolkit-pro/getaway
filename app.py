@@ -19,7 +19,6 @@ def init_db():
     conn = sqlite3.connect('payments.db')
     c = conn.cursor()
     
-    # Users Table
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   username TEXT UNIQUE,
@@ -28,7 +27,6 @@ def init_db():
                   role TEXT DEFAULT 'provider',
                   created_at DATETIME)''')
     
-    # Providers Table
     c.execute('''CREATE TABLE IF NOT EXISTS providers
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
@@ -44,7 +42,6 @@ def init_db():
                   created_at DATETIME,
                   FOREIGN KEY (user_id) REFERENCES users(id))''')
     
-    # Payments Table
     c.execute('''CREATE TABLE IF NOT EXISTS payments
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   transaction_id TEXT,
@@ -58,7 +55,6 @@ def init_db():
                   received_at DATETIME,
                   FOREIGN KEY (provider_id) REFERENCES providers(id))''')
     
-    # Payment Requests Table
     c.execute('''CREATE TABLE IF NOT EXISTS payment_requests
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   request_id TEXT UNIQUE,
@@ -75,7 +71,6 @@ def init_db():
                   matched_transaction_id TEXT,
                   FOREIGN KEY (provider_id) REFERENCES providers(id))''')
     
-    # Logs Table
     c.execute('''CREATE TABLE IF NOT EXISTS logs
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
@@ -671,8 +666,10 @@ def provider_dashboard():
     
     return render_template_string('''
     <!DOCTYPE html>
-    <html>
+    <html lang="bn">
     <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Provider Dashboard - PayBD</title>
         <style>
             * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -687,13 +684,23 @@ def provider_dashboard():
             .stat-card { background: white; padding: 20px; border-radius: 10px; }
             .stat-card h3 { color: #666; font-size: 14px; }
             .stat-card p { font-size: 24px; font-weight: bold; color: #667eea; }
-            .api-section { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
-            .api-key-box { background: #f8f9fa; padding: 15px; border-radius: 5px; }
-            .api-key-box code { font-size: 14px; color: #d63384; word-break: break-all; }
+            .api-section { background: white; padding: 25px; border-radius: 15px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            .api-section h3 { color: #333; margin-bottom: 15px; font-size: 18px; }
+            .api-key-display { background: #f8f9fa; border: 2px dashed #667eea; padding: 15px; border-radius: 10px; margin-bottom: 15px; }
+            .api-key-display code { font-size: 16px; color: #d63384; word-break: break-all; font-weight: bold; }
+            .copy-btn { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: bold; transition: all 0.3s; }
+            .copy-btn:hover { background: #0056b3; }
+            .copy-btn.copied { background: #28a745; }
+            .api-info { background: #e8f4fd; padding: 15px; border-radius: 8px; margin-top: 15px; font-size: 14px; color: #0066cc; }
             .table-container { background: white; padding: 20px; border-radius: 10px; }
             table { width: 100%; border-collapse: collapse; }
             th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
             th { background: #667eea; color: white; }
+            @media (max-width: 768px) {
+                .sidebar { width: 100%; height: auto; position: relative; }
+                .main { margin-left: 0; }
+                .stats { grid-template-columns: 1fr; }
+            }
         </style>
     </head>
     <body>
@@ -722,10 +729,16 @@ def provider_dashboard():
             </div>
             <div class="api-section">
                 <h3>🔑 আপনার API Key</h3>
-                <div class="api-key-box">
-                    <code>{{ provider[4] }}</code>
+                <div class="api-key-display">
+                    <code id="apiKey">{{ provider[4] }}</code>
                 </div>
-                <p style="color: #666; margin-top: 10px;">এই API Key ব্যবহার করে ওয়েবসাইটে পেমেন্ট গ্রহণ করুন</p>
+                <button class="copy-btn" id="copyBtn" onclick="copyAPIKey()">📋 API Key কপি করুন</button>
+                <div class="api-info">
+                    <strong>ℹ️ ব্যবহার নিয়ম:</strong><br>
+                    ১. এই API Key আপনার ওয়েবসাইটে ব্যবহার করুন<br>
+                    ২. Header এ পাঠান: <code>X-API-Key: {{ provider[4][:20] }}...</code><br>
+                    ৩. এই Key কারো সাথে শেয়ার করবেন না
+                </div>
             </div>
             <div class="table-container">
                 <h3>Recent Payments</h3>
@@ -747,6 +760,31 @@ def provider_dashboard():
                 </table>
             </div>
         </div>
+        <script>
+            function copyAPIKey() {
+                const apiKey = document.getElementById('apiKey').textContent;
+                const copyBtn = document.getElementById('copyBtn');
+                navigator.clipboard.writeText(apiKey).then(() => {
+                    copyBtn.textContent = '✅ কপি হয়েছে!';
+                    copyBtn.classList.add('copied');
+                    setTimeout(() => {
+                        copyBtn.textContent = '📋 API Key কপি করুন';
+                        copyBtn.classList.remove('copied');
+                    }, 2000);
+                }).catch(() => {
+                    const textArea = document.createElement('textarea');
+                    textArea.value = apiKey;
+                    document.body.appendChild(textArea);
+                    textArea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                    copyBtn.textContent = '✅ কপি হয়েছে!';
+                    setTimeout(() => {
+                        copyBtn.textContent = '📋 API Key কপি করুন';
+                    }, 2000);
+                });
+            }
+        </script>
     </body>
     </html>
     ''', provider=provider, total_payments=total_payments, recent_payments=recent_payments)
@@ -855,7 +893,6 @@ def receive_sms():
                            WHERE id = ?""",
                           (amount, amount, provider_id))
                 
-                # Match pending requests
                 c.execute("""SELECT id FROM payment_requests 
                            WHERE amount=? AND method=? AND status='pending'
                            AND provider_id=? AND created_at > ?
