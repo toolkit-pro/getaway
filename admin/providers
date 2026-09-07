@@ -1,0 +1,549 @@
+# ==================== ADMIN - PROVIDERS MANAGEMENT ====================
+@app.route('/admin/providers')
+@admin_required
+def admin_providers():
+    conn = sqlite3.connect('payments.db')
+    c = conn.cursor()
+    
+    # সার্চ ও ফিল্টার
+    search = request.args.get('search', '')
+    status_filter = request.args.get('status', '')
+    
+    query = """SELECT p.*, u.username, u.email, u.created_at as user_created
+               FROM providers p 
+               JOIN users u ON p.user_id = u.id
+               WHERE 1=1"""
+    
+    params = []
+    
+    if search:
+        query += " AND (p.provider_name LIKE ? OR u.username LIKE ? OR p.nagad_number LIKE ? OR p.bkash_number LIKE ?)"
+        search_param = f"%{search}%"
+        params.extend([search_param, search_param, search_param, search_param])
+    
+    if status_filter:
+        query += " AND p.status = ?"
+        params.append(status_filter)
+    
+    query += " ORDER BY p.id DESC"
+    
+    c.execute(query, params)
+    providers = c.fetchall()
+    
+    # Stats
+    c.execute("SELECT COUNT(*) FROM providers WHERE status='active'")
+    active_count = c.fetchone()[0]
+    
+    c.execute("SELECT COUNT(*) FROM providers WHERE status='inactive'")
+    inactive_count = c.fetchone()[0]
+    
+    c.execute("SELECT COUNT(*) FROM providers WHERE status='pending'")
+    pending_count = c.fetchone()[0]
+    
+    conn.close()
+    
+    return render_template_string('''
+    <!DOCTYPE html>
+    <html lang="bn">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Providers Management - PayBD Admin</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { font-family: Arial, sans-serif; background: #f0f2f5; }
+            
+            .sidebar {
+                width: 250px;
+                background: #2c3e50;
+                height: 100vh;
+                position: fixed;
+                padding: 20px;
+                overflow-y: auto;
+            }
+            .sidebar h2 { color: white; margin-bottom: 30px; text-align: center; }
+            .sidebar a {
+                display: block;
+                color: #ecf0f1;
+                padding: 12px;
+                text-decoration: none;
+                border-radius: 5px;
+                margin-bottom: 5px;
+                transition: background 0.3s;
+            }
+            .sidebar a:hover { background: #34495e; }
+            .sidebar a.active { background: #667eea; }
+            
+            .main {
+                margin-left: 250px;
+                padding: 20px;
+            }
+            
+            .header {
+                background: white;
+                padding: 20px;
+                border-radius: 10px;
+                margin-bottom: 20px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            
+            .stats {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 15px;
+                margin-bottom: 20px;
+            }
+            
+            .stat-card {
+                background: white;
+                padding: 20px;
+                border-radius: 10px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                text-align: center;
+            }
+            
+            .stat-card h3 { color: #666; font-size: 14px; margin-bottom: 10px; }
+            .stat-card p { font-size: 24px; font-weight: bold; }
+            .stat-card.active { color: #28a745; }
+            .stat-card.inactive { color: #dc3545; }
+            .stat-card.pending { color: #ffc107; }
+            
+            .filters {
+                background: white;
+                padding: 15px;
+                border-radius: 10px;
+                margin-bottom: 20px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                display: flex;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+            
+            .filters input, .filters select {
+                padding: 10px;
+                border: 1px solid #ddd;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            
+            .filters input { flex: 1; min-width: 200px; }
+            
+            .btn {
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                font-size: 14px;
+                transition: all 0.3s;
+                text-decoration: none;
+                display: inline-block;
+            }
+            
+            .btn-primary { background: #007bff; color: white; }
+            .btn-success { background: #28a745; color: white; }
+            .btn-danger { background: #dc3545; color: white; }
+            .btn-warning { background: #ffc107; color: #333; }
+            .btn-sm { padding: 5px 10px; font-size: 12px; }
+            
+            .table-container {
+                background: white;
+                padding: 20px;
+                border-radius: 10px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                overflow-x: auto;
+            }
+            
+            table { width: 100%; border-collapse: collapse; }
+            th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+            th { background: #667eea; color: white; font-weight: 600; }
+            tr:hover { background: #f8f9fa; }
+            
+            .status-badge {
+                padding: 4px 10px;
+                border-radius: 20px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            .status-active { background: #d4edda; color: #155724; }
+            .status-inactive { background: #f8d7da; color: #721c24; }
+            .status-pending { background: #fff3cd; color: #856404; }
+            
+            .api-key {
+                background: #f8f9fa;
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-size: 12px;
+                color: #d63384;
+                word-break: break-all;
+                cursor: pointer;
+            }
+            
+            .modal {
+                display: none;
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0,0,0,0.5);
+                z-index: 1000;
+            }
+            
+            .modal-content {
+                background: white;
+                padding: 30px;
+                border-radius: 10px;
+                width: 500px;
+                max-width: 90%;
+                margin: 50px auto;
+                max-height: 90vh;
+                overflow-y: auto;
+            }
+            
+            .modal-content h2 { margin-bottom: 20px; }
+            
+            .modal-content input {
+                width: 100%;
+                padding: 10px;
+                margin-bottom: 15px;
+                border: 1px solid #ddd;
+                border-radius: 5px;
+            }
+            
+            @media (max-width: 768px) {
+                .sidebar { width: 100%; height: auto; position: relative; }
+                .main { margin-left: 0; }
+                .stats { grid-template-columns: 1fr; }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="sidebar">
+            <h2>⚙️ Admin Panel</h2>
+            <a href="/admin">📊 Dashboard</a>
+            <a href="/admin/providers" class="active">👥 Providers</a>
+            <a href="/admin/transactions">💰 Transactions</a>
+            <a href="/admin/settings">⚙️ Settings</a>
+            <a href="/logout">🚪 Logout</a>
+        </div>
+        
+        <div class="main">
+            <div class="header">
+                <h1>👥 Providers Management</h1>
+                <button class="btn btn-success" onclick="showAddModal()">+ Add Provider</button>
+            </div>
+            
+            <div class="stats">
+                <div class="stat-card">
+                    <h3>Active Providers</h3>
+                    <p class="active">{{ active_count }}</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Pending</h3>
+                    <p class="pending">{{ pending_count }}</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Inactive</h3>
+                    <p class="inactive">{{ inactive_count }}</p>
+                </div>
+            </div>
+            
+            <div class="filters">
+                <form method="GET" action="/admin/providers" style="display: flex; gap: 10px; flex: 1; flex-wrap: wrap;">
+                    <input type="text" name="search" placeholder="Search by name, username, number..." value="{{ search }}">
+                    <select name="status">
+                        <option value="">All Status</option>
+                        <option value="active" {% if status_filter == 'active' %}selected{% endif %}>Active</option>
+                        <option value="pending" {% if status_filter == 'pending' %}selected{% endif %}>Pending</option>
+                        <option value="inactive" {% if status_filter == 'inactive' %}selected{% endif %}>Inactive</option>
+                    </select>
+                    <button type="submit" class="btn btn-primary">Search</button>
+                </form>
+            </div>
+            
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Provider Info</th>
+                            <th>Numbers</th>
+                            <th>API Key</th>
+                            <th>Balance</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for p in providers %}
+                        <tr>
+                            <td>#{{ p[0] }}</td>
+                            <td>
+                                <strong>{{ p[2] }}</strong><br>
+                                <small>@{{ p[9] }}</small><br>
+                                <small>{{ p[10] }}</small>
+                            </td>
+                            <td>
+                                <small>Nagad: {{ p[3] or 'N/A' }}</small><br>
+                                <small>Bkash: {{ p[4] or 'N/A' }}</small>
+                            </td>
+                            <td>
+                                <span class="api-key" onclick="copyAPIKey('{{ p[5] }}')" title="Click to copy">
+                                    {{ p[5][:20] }}...
+                                </span>
+                            </td>
+                            <td>{{ p[6] }} Tk</td>
+                            <td>
+                                <span class="status-badge status-{{ p[9] }}">{{ p[9] }}</span>
+                            </td>
+                            <td>
+                                <button class="btn btn-primary btn-sm" onclick="viewProvider({{ p[0] }})">View</button>
+                                <button class="btn btn-warning btn-sm" onclick="editProvider({{ p[0] }})">Edit</button>
+                                <button class="btn btn-danger btn-sm" onclick="deleteProvider({{ p[0] }})">Delete</button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Add Provider Modal -->
+        <div class="modal" id="addModal">
+            <div class="modal-content">
+                <h2>Add New Provider</h2>
+                <form method="POST" action="/admin/add-provider">
+                    <input type="text" name="username" placeholder="Username" required>
+                    <input type="password" name="password" placeholder="Password" required>
+                    <input type="email" name="email" placeholder="Email" required>
+                    <input type="text" name="provider_name" placeholder="Provider Name" required>
+                    <input type="text" name="nagad_number" placeholder="Nagad Number (01XXXXXXXXX)">
+                    <input type="text" name="bkash_number" placeholder="Bkash Number (01XXXXXXXXX)">
+                    <button type="submit" class="btn btn-success">Create Provider</button>
+                    <button type="button" class="btn btn-danger" onclick="hideAddModal()">Cancel</button>
+                </form>
+            </div>
+        </div>
+        
+        <script>
+            function showAddModal() {
+                document.getElementById('addModal').style.display = 'block';
+            }
+            
+            function hideAddModal() {
+                document.getElementById('addModal').style.display = 'none';
+            }
+            
+            function copyAPIKey(key) {
+                navigator.clipboard.writeText(key);
+                alert('API Key copied!');
+            }
+            
+            function viewProvider(id) {
+                window.location.href = '/admin/provider/' + id;
+            }
+            
+            function editProvider(id) {
+                window.location.href = '/admin/edit-provider/' + id;
+            }
+            
+            function deleteProvider(id) {
+                if (confirm('Are you sure you want to delete this provider?')) {
+                    fetch('/admin/delete-provider/' + id, { method: 'POST' })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                alert('Provider deleted!');
+                                location.reload();
+                            }
+                        });
+                }
+            }
+        </script>
+    </body>
+    </html>
+    ''', providers=providers, active_count=active_count, 
+       inactive_count=inactive_count, pending_count=pending_count,
+       search=search, status_filter=status_filter)
+
+# ==================== ADD PROVIDER ====================
+@app.route('/admin/add-provider', methods=['POST'])
+@admin_required
+def add_provider():
+    username = request.form.get('username')
+    password = request.form.get('password')
+    email = request.form.get('email')
+    provider_name = request.form.get('provider_name')
+    nagad_number = request.form.get('nagad_number', '')
+    bkash_number = request.form.get('bkash_number', '')
+    
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    api_key = generate_api_key()
+    api_secret = generate_api_secret()
+    
+    conn = sqlite3.connect('payments.db')
+    c = conn.cursor()
+    
+    # Check duplicate
+    c.execute("SELECT id FROM users WHERE username=?", (username,))
+    if c.fetchone():
+        conn.close()
+        return "Username already exists!"
+    
+    # Create user
+    c.execute("""INSERT INTO users (username, password, email, role, created_at)
+               VALUES (?, ?, ?, 'provider', ?)""",
+              (username, password_hash, email, datetime.now()))
+    user_id = c.lastrowid
+    
+    # Create provider
+    c.execute("""INSERT INTO providers 
+               (user_id, provider_name, nagad_number, bkash_number, api_key, api_secret, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+              (user_id, provider_name, nagad_number, bkash_number, api_key, api_secret, datetime.now()))
+    
+    conn.commit()
+    conn.close()
+    
+    log_action(session['user_id'], 'add_provider', f'Added: {provider_name}', request.remote_addr)
+    
+    return redirect(url_for('admin_providers'))
+
+# ==================== VIEW PROVIDER ====================
+@app.route('/admin/provider/<int:provider_id>')
+@admin_required
+def view_provider(provider_id):
+    conn = sqlite3.connect('payments.db')
+    c = conn.cursor()
+    
+    c.execute("""SELECT p.*, u.username, u.email, u.created_at as user_created
+               FROM providers p 
+               JOIN users u ON p.user_id = u.id
+               WHERE p.id=?""", (provider_id,))
+    provider = c.fetchone()
+    
+    if not provider:
+        conn.close()
+        return "Provider not found", 404
+    
+    # Payments
+    c.execute("""SELECT * FROM payments WHERE provider_id=? 
+               ORDER BY id DESC LIMIT 50""", (provider_id,))
+    payments = c.fetchall()
+    
+    # Stats
+    c.execute("SELECT COUNT(*) FROM payments WHERE provider_id=?", (provider_id,))
+    total_payments = c.fetchone()[0]
+    
+    c.execute("SELECT SUM(amount) FROM payments WHERE provider_id=?", (provider_id,))
+    total_received = c.fetchone()[0] or 0
+    
+    conn.close()
+    
+    return render_template_string('''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Provider Details - PayBD Admin</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { font-family: Arial; background: #f0f2f5; }
+            .sidebar { width: 250px; background: #2c3e50; height: 100vh; position: fixed; padding: 20px; }
+            .sidebar h2 { color: white; margin-bottom: 30px; }
+            .sidebar a { display: block; color: #ecf0f1; padding: 12px; text-decoration: none; border-radius: 5px; margin-bottom: 5px; }
+            .sidebar a:hover { background: #34495e; }
+            .main { margin-left: 250px; padding: 20px; }
+            .header { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
+            .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 20px; }
+            .stat-card { background: white; padding: 20px; border-radius: 10px; }
+            .table-container { background: white; padding: 20px; border-radius: 10px; overflow-x: auto; }
+            table { width: 100%; border-collapse: collapse; }
+            th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+            th { background: #667eea; color: white; }
+        </style>
+    </head>
+    <body>
+        <div class="sidebar">
+            <h2>⚙️ Admin Panel</h2>
+            <a href="/admin">📊 Dashboard</a>
+            <a href="/admin/providers">👥 Providers</a>
+            <a href="/logout">🚪 Logout</a>
+        </div>
+        
+        <div class="main">
+            <div class="header">
+                <h1>{{ provider[2] }} - Details</h1>
+                <a href="/admin/providers">← Back to Providers</a>
+            </div>
+            
+            <div class="stats">
+                <div class="stat-card">
+                    <h3>Total Payments</h3>
+                    <p>{{ total_payments }}</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Total Received</h3>
+                    <p>{{ total_received }} Tk</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Balance</h3>
+                    <p>{{ provider[5] }} Tk</p>
+                </div>
+            </div>
+            
+            <div class="table-container">
+                <h3>Payment History</h3>
+                <table>
+                    <tr>
+                        <th>Transaction ID</th>
+                        <th>Amount</th>
+                        <th>Method</th>
+                        <th>Sender</th>
+                        <th>Time</th>
+                    </tr>
+                    {% for p in payments %}
+                    <tr>
+                        <td>{{ p[1] }}</td>
+                        <td>{{ p[2] }} Tk</td>
+                        <td>{{ p[3].upper() }}</td>
+                        <td>{{ p[4] or 'N/A' }}</td>
+                        <td>{{ p[7] }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+        </div>
+    </body>
+    </html>
+    ''', provider=provider, payments=payments, total_payments=total_payments, total_received=total_received)
+
+# ==================== DELETE PROVIDER ====================
+@app.route('/admin/delete-provider/<int:provider_id>', methods=['POST'])
+@admin_required
+def delete_provider(provider_id):
+    conn = sqlite3.connect('payments.db')
+    c = conn.cursor()
+    
+    # Get user_id
+    c.execute("SELECT user_id FROM providers WHERE id=?", (provider_id,))
+    result = c.fetchone()
+    
+    if result:
+        user_id = result[0]
+        
+        # Delete provider
+        c.execute("DELETE FROM providers WHERE id=?", (provider_id,))
+        
+        # Delete user
+        c.execute("DELETE FROM users WHERE id=?", (user_id,))
+        
+        conn.commit()
+        
+        log_action(session['user_id'], 'delete_provider', f'Deleted provider #{provider_id}', request.remote_addr)
+    
+    conn.close()
+    
+    return jsonify({'success': True})
