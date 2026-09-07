@@ -109,11 +109,9 @@ create_default_admin()
 
 # ==================== API KEY GENERATION ====================
 def generate_api_key():
-    """ইউনিক API Key জেনারেট করুন"""
     return 'pk_live_' + secrets.token_urlsafe(32)
 
 def generate_api_secret():
-    """ইউনিক API Secret জেনারেট করুন"""
     return 'sk_live_' + secrets.token_urlsafe(32)
 
 # ==================== AUTHENTICATION ====================
@@ -138,7 +136,7 @@ def admin_required(f):
         conn.close()
         
         if not result or result[0] != 'admin':
-            return "⛔ Access Denied", 403
+            return "⛔ Access Denied. Admin only!", 403
         
         return f(*args, **kwargs)
     return decorated_function
@@ -152,9 +150,7 @@ def log_action(user_id, action, details, ip_address=''):
     conn.commit()
     conn.close()
 
-# ==================== API KEY VERIFICATION ====================
 def verify_api_key(api_key):
-    """API Key ভেরিফাই করুন"""
     if not api_key:
         return None
     
@@ -247,24 +243,20 @@ def register_page():
         conn = sqlite3.connect('payments.db')
         c = conn.cursor()
         
-        # Check if username exists
         c.execute("SELECT id FROM users WHERE username=?", (username,))
         if c.fetchone():
             conn.close()
             return "Username already exists!"
         
-        # Create user
         password_hash = hashlib.sha256(password.encode()).hexdigest()
         c.execute("""INSERT INTO users (username, password, email, role, created_at)
                    VALUES (?, ?, ?, 'provider', ?)""",
                   (username, password_hash, email, datetime.now()))
         user_id = c.lastrowid
         
-        # Generate API Key & Secret
         api_key = generate_api_key()
         api_secret = generate_api_secret()
         
-        # Create provider
         c.execute("""INSERT INTO providers 
                    (user_id, provider_name, nagad_number, bkash_number, api_key, api_secret, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -316,125 +308,6 @@ def logout():
     session.clear()
     return redirect(url_for('login_page'))
 
-# ==================== PROVIDER DASHBOARD ====================
-@app.route('/provider')
-@login_required
-def provider_dashboard():
-    conn = sqlite3.connect('payments.db')
-    c = conn.cursor()
-    
-    c.execute("SELECT * FROM providers WHERE user_id=?", (session['user_id'],))
-    provider = c.fetchone()
-    
-    if not provider:
-        return "Provider not found", 404
-    
-    provider_id = provider[0]
-    
-    # Stats
-    c.execute("SELECT COUNT(*) FROM payments WHERE provider_id=?", (provider_id,))
-    total_payments = c.fetchone()[0]
-    
-    c.execute("SELECT SUM(amount) FROM payments WHERE provider_id=?", (provider_id,))
-    total_received = c.fetchone()[0] or 0
-    
-    c.execute("""SELECT * FROM payments WHERE provider_id=? 
-               ORDER BY id DESC LIMIT 10""", (provider_id,))
-    recent_payments = c.fetchall()
-    
-    conn.close()
-    
-    return render_template_string('''
-    <!DOCTYPE html>
-    <html lang="bn">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Provider Dashboard - PayBD</title>
-        <style>
-            * { margin: 0; padding: 0; box-sizing: border-box; }
-            body { font-family: Arial; background: #f0f2f5; }
-            .sidebar { width: 250px; background: #2c3e50; height: 100vh; position: fixed; padding: 20px; }
-            .sidebar h2 { color: white; margin-bottom: 30px; }
-            .sidebar a { display: block; color: #ecf0f1; padding: 12px; text-decoration: none; border-radius: 5px; margin-bottom: 5px; }
-            .sidebar a:hover { background: #34495e; }
-            .main { margin-left: 250px; padding: 20px; }
-            .header { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
-            .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 20px; }
-            .stat-card { background: white; padding: 20px; border-radius: 10px; }
-            .stat-card h3 { color: #666; margin-bottom: 10px; }
-            .stat-card p { font-size: 24px; font-weight: bold; color: #667eea; }
-            .api-section { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
-            .api-key-box { background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 10px; }
-            .api-key-box code { font-size: 14px; color: #d63384; word-break: break-all; }
-            .table-container { background: white; padding: 20px; border-radius: 10px; }
-            table { width: 100%; border-collapse: collapse; }
-            th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
-            th { background: #667eea; color: white; }
-        </style>
-    </head>
-    <body>
-        <div class="sidebar">
-            <h2>🏪 Provider</h2>
-            <a href="/provider">📊 Dashboard</a>
-            <a href="/provider/payments">💰 Payments</a>
-            <a href="/logout">🚪 Logout</a>
-        </div>
-        
-        <div class="main">
-            <div class="header">
-                <h1>Welcome, {{ provider_name }}!</h1>
-            </div>
-            
-            <div class="stats">
-                <div class="stat-card">
-                    <h3>Balance</h3>
-                    <p>{{ balance }} Tk</p>
-                </div>
-                <div class="stat-card">
-                    <h3>Total Received</h3>
-                    <p>{{ total_received }} Tk</p>
-                </div>
-                <div class="stat-card">
-                    <h3>Total Payments</h3>
-                    <p>{{ total_payments }}</p>
-                </div>
-            </div>
-            
-            <div class="api-section">
-                <h3>🔑 আপনার API Key</h3>
-                <div class="api-key-box">
-                    <code>{{ api_key }}</code>
-                </div>
-                <p style="color: #666;">এই API Key ব্যবহার করে আপনার ওয়েবসাইটে পেমেন্ট গ্রহণ করুন</p>
-            </div>
-            
-            <div class="table-container">
-                <h3>Recent Payments</h3>
-                <table>
-                    <tr>
-                        <th>Transaction ID</th>
-                        <th>Amount</th>
-                        <th>Method</th>
-                        <th>Time</th>
-                    </tr>
-                    {% for p in recent_payments %}
-                    <tr>
-                        <td>{{ p[1] }}</td>
-                        <td>{{ p[2] }} Tk</td>
-                        <td>{{ p[3].upper() }}</td>
-                        <td>{{ p[7] }}</td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            </div>
-        </div>
-    </body>
-    </html>
-    ''', provider_name=provider[2], balance=provider[5],
-       total_received=provider[6], total_payments=total_payments,
-       api_key=provider[4], recent_payments=recent_payments)
-
 # ==================== ADMIN DASHBOARD ====================
 @app.route('/admin')
 @admin_required
@@ -451,9 +324,13 @@ def admin_dashboard():
     c.execute("SELECT SUM(amount) FROM payments")
     total_revenue = c.fetchone()[0] or 0
     
-    c.execute("""SELECT p.*, u.username FROM providers p 
-               JOIN users u ON p.user_id = u.id""")
-    providers = c.fetchall()
+    c.execute("SELECT COUNT(*) FROM payments WHERE received_at >= date('now')")
+    today_payments = c.fetchone()[0]
+    
+    c.execute("""SELECT p.*, pr.provider_name FROM payments p
+               LEFT JOIN providers pr ON p.provider_id = pr.id
+               ORDER BY p.id DESC LIMIT 10""")
+    recent_payments = c.fetchall()
     
     conn.close()
     
@@ -471,9 +348,9 @@ def admin_dashboard():
             .sidebar a:hover { background: #34495e; }
             .main { margin-left: 250px; padding: 20px; }
             .header { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
-            .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 20px; }
+            .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; }
             .stat-card { background: white; padding: 20px; border-radius: 10px; }
-            .stat-card h3 { color: #666; margin-bottom: 10px; }
+            .stat-card h3 { color: #666; margin-bottom: 10px; font-size: 14px; }
             .stat-card p { font-size: 24px; font-weight: bold; color: #667eea; }
             .table-container { background: white; padding: 20px; border-radius: 10px; }
             table { width: 100%; border-collapse: collapse; }
@@ -488,12 +365,10 @@ def admin_dashboard():
             <a href="/admin/providers">👥 Providers</a>
             <a href="/logout">🚪 Logout</a>
         </div>
-        
         <div class="main">
             <div class="header">
                 <h1>Admin Dashboard</h1>
             </div>
-            
             <div class="stats">
                 <div class="stat-card">
                     <h3>Total Providers</h3>
@@ -507,25 +382,26 @@ def admin_dashboard():
                     <h3>Total Revenue</h3>
                     <p>{{ total_revenue }} Tk</p>
                 </div>
+                <div class="stat-card">
+                    <h3>Today</h3>
+                    <p>{{ today_payments }}</p>
+                </div>
             </div>
-            
             <div class="table-container">
-                <h3>Providers</h3>
+                <h3>Recent Payments</h3>
                 <table>
                     <tr>
-                        <th>ID</th>
-                        <th>Name</th>
-                        <th>Username</th>
-                        <th>API Key</th>
-                        <th>Balance</th>
+                        <th>Transaction</th>
+                        <th>Amount</th>
+                        <th>Method</th>
+                        <th>Provider</th>
                     </tr>
-                    {% for p in providers %}
+                    {% for p in recent_payments %}
                     <tr>
-                        <td>{{ p[0] }}</td>
-                        <td>{{ p[2] }}</td>
-                        <td>{{ p[9] }}</td>
-                        <td><code>{{ p[4] }}</code></td>
-                        <td>{{ p[5] }} Tk</td>
+                        <td>{{ p[1] }}</td>
+                        <td>{{ p[2] }} Tk</td>
+                        <td>{{ p[3].upper() }}</td>
+                        <td>{{ p[9] or 'N/A' }}</td>
                     </tr>
                     {% endfor %}
                 </table>
@@ -534,12 +410,350 @@ def admin_dashboard():
     </body>
     </html>
     ''', total_providers=total_providers, total_payments=total_payments,
-       total_revenue=total_revenue, providers=providers)
+       total_revenue=total_revenue, today_payments=today_payments,
+       recent_payments=recent_payments)
+
+# ==================== ADMIN - PROVIDERS ====================
+@app.route('/admin/providers')
+@admin_required
+def admin_providers():
+    conn = sqlite3.connect('payments.db')
+    c = conn.cursor()
+    
+    search = request.args.get('search', '')
+    status_filter = request.args.get('status', '')
+    
+    query = """SELECT p.id, p.provider_name, p.nagad_number, p.bkash_number, 
+                      p.api_key, p.balance, p.total_received, p.status,
+                      u.username, u.email
+               FROM providers p 
+               JOIN users u ON p.user_id = u.id
+               WHERE 1=1"""
+    
+    params = []
+    
+    if search:
+        query += """ AND (p.provider_name LIKE ? OR u.username LIKE ? 
+                    OR p.nagad_number LIKE ? OR p.bkash_number LIKE ?)"""
+        search_param = f"%{search}%"
+        params.extend([search_param, search_param, search_param, search_param])
+    
+    if status_filter:
+        query += " AND p.status = ?"
+        params.append(status_filter)
+    
+    query += " ORDER BY p.id DESC"
+    
+    c.execute(query, params)
+    providers = c.fetchall()
+    
+    c.execute("SELECT COUNT(*) FROM providers WHERE status='active'")
+    active_count = c.fetchone()[0]
+    
+    c.execute("SELECT COUNT(*) FROM providers WHERE status='inactive'")
+    inactive_count = c.fetchone()[0]
+    
+    c.execute("SELECT COUNT(*) FROM providers WHERE status='pending'")
+    pending_count = c.fetchone()[0]
+    
+    conn.close()
+    
+    return render_template_string('''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Providers - PayBD Admin</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { font-family: Arial; background: #f0f2f5; }
+            .sidebar { width: 250px; background: #2c3e50; height: 100vh; position: fixed; padding: 20px; }
+            .sidebar h2 { color: white; margin-bottom: 30px; }
+            .sidebar a { display: block; color: #ecf0f1; padding: 12px; text-decoration: none; border-radius: 5px; margin-bottom: 5px; }
+            .sidebar a:hover { background: #34495e; }
+            .main { margin-left: 250px; padding: 20px; }
+            .header { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+            .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 20px; }
+            .stat-card { background: white; padding: 20px; border-radius: 10px; text-align: center; }
+            .stat-card h3 { color: #666; font-size: 14px; }
+            .stat-card p { font-size: 24px; font-weight: bold; }
+            .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; }
+            .btn-success { background: #28a745; color: white; }
+            .btn-danger { background: #dc3545; color: white; }
+            .btn-sm { padding: 5px 10px; font-size: 12px; }
+            .table-container { background: white; padding: 20px; border-radius: 10px; overflow-x: auto; }
+            table { width: 100%; border-collapse: collapse; }
+            th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+            th { background: #667eea; color: white; }
+            .status-badge { padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; }
+            .status-active { background: #d4edda; color: #155724; }
+            .status-inactive { background: #f8d7da; color: #721c24; }
+            .status-pending { background: #fff3cd; color: #856404; }
+            .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
+            .modal-content { background: white; padding: 30px; border-radius: 10px; width: 500px; max-width: 90%; margin: 50px auto; }
+            .modal-content input { width: 100%; padding: 10px; margin-bottom: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        </style>
+    </head>
+    <body>
+        <div class="sidebar">
+            <h2>⚙️ Admin</h2>
+            <a href="/admin">📊 Dashboard</a>
+            <a href="/admin/providers">👥 Providers</a>
+            <a href="/logout">🚪 Logout</a>
+        </div>
+        <div class="main">
+            <div class="header">
+                <h1>👥 Providers Management</h1>
+                <button class="btn btn-success" onclick="showAddModal()">+ Add Provider</button>
+            </div>
+            <div class="stats">
+                <div class="stat-card">
+                    <h3>Active</h3>
+                    <p style="color: #28a745;">{{ active_count }}</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Pending</h3>
+                    <p style="color: #ffc107;">{{ pending_count }}</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Inactive</h3>
+                    <p style="color: #dc3545;">{{ inactive_count }}</p>
+                </div>
+            </div>
+            <div class="table-container">
+                <table>
+                    <tr>
+                        <th>ID</th>
+                        <th>Provider</th>
+                        <th>Numbers</th>
+                        <th>API Key</th>
+                        <th>Balance</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                    {% for p in providers %}
+                    <tr>
+                        <td>#{{ p[0] }}</td>
+                        <td>
+                            <strong>{{ p[1] }}</strong><br>
+                            <small>@{{ p[8] }}</small><br>
+                            <small>{{ p[9] }}</small>
+                        </td>
+                        <td>
+                            <small>Nagad: {{ p[2] or 'N/A' }}</small><br>
+                            <small>Bkash: {{ p[3] or 'N/A' }}</small>
+                        </td>
+                        <td><code style="font-size:12px;">{{ p[4][:20] }}...</code></td>
+                        <td>{{ p[5] }} Tk</td>
+                        <td><span class="status-badge status-{{ p[7] }}">{{ p[7] }}</span></td>
+                        <td>
+                            <button class="btn btn-danger btn-sm" onclick="deleteProvider({{ p[0] }})">Delete</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+        </div>
+        <div class="modal" id="addModal">
+            <div class="modal-content">
+                <h2>Add New Provider</h2>
+                <form method="POST" action="/admin/add-provider">
+                    <input type="text" name="username" placeholder="Username" required>
+                    <input type="password" name="password" placeholder="Password" required>
+                    <input type="email" name="email" placeholder="Email" required>
+                    <input type="text" name="provider_name" placeholder="Provider Name" required>
+                    <input type="text" name="nagad_number" placeholder="Nagad Number">
+                    <input type="text" name="bkash_number" placeholder="Bkash Number">
+                    <button type="submit" class="btn btn-success">Create</button>
+                    <button type="button" class="btn btn-danger" onclick="hideAddModal()">Cancel</button>
+                </form>
+            </div>
+        </div>
+        <script>
+            function showAddModal() { document.getElementById('addModal').style.display = 'block'; }
+            function hideAddModal() { document.getElementById('addModal').style.display = 'none'; }
+            function deleteProvider(id) {
+                if (confirm('Delete this provider?')) {
+                    fetch('/admin/delete-provider/' + id, { method: 'POST' })
+                        .then(r => r.json())
+                        .then(d => { if (d.success) location.reload(); });
+                }
+            }
+        </script>
+    </body>
+    </html>
+    ''', providers=providers, active_count=active_count,
+       inactive_count=inactive_count, pending_count=pending_count,
+       search=search, status_filter=status_filter)
+
+# ==================== ADD PROVIDER ====================
+@app.route('/admin/add-provider', methods=['POST'])
+@admin_required
+def add_provider():
+    username = request.form.get('username')
+    password = request.form.get('password')
+    email = request.form.get('email')
+    provider_name = request.form.get('provider_name')
+    nagad_number = request.form.get('nagad_number', '')
+    bkash_number = request.form.get('bkash_number', '')
+    
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    api_key = generate_api_key()
+    api_secret = generate_api_secret()
+    
+    conn = sqlite3.connect('payments.db')
+    c = conn.cursor()
+    
+    c.execute("SELECT id FROM users WHERE username=?", (username,))
+    if c.fetchone():
+        conn.close()
+        return "Username already exists!"
+    
+    c.execute("""INSERT INTO users (username, password, email, role, created_at)
+               VALUES (?, ?, ?, 'provider', ?)""",
+              (username, password_hash, email, datetime.now()))
+    user_id = c.lastrowid
+    
+    c.execute("""INSERT INTO providers 
+               (user_id, provider_name, nagad_number, bkash_number, api_key, api_secret, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+              (user_id, provider_name, nagad_number, bkash_number, api_key, api_secret, datetime.now()))
+    
+    conn.commit()
+    conn.close()
+    
+    log_action(session['user_id'], 'add_provider', f'Added: {provider_name}', request.remote_addr)
+    
+    return redirect(url_for('admin_providers'))
+
+# ==================== DELETE PROVIDER ====================
+@app.route('/admin/delete-provider/<int:provider_id>', methods=['POST'])
+@admin_required
+def delete_provider(provider_id):
+    conn = sqlite3.connect('payments.db')
+    c = conn.cursor()
+    
+    c.execute("SELECT user_id FROM providers WHERE id=?", (provider_id,))
+    result = c.fetchone()
+    
+    if result:
+        user_id = result[0]
+        c.execute("DELETE FROM providers WHERE id=?", (provider_id,))
+        c.execute("DELETE FROM users WHERE id=?", (user_id,))
+        conn.commit()
+        log_action(session['user_id'], 'delete_provider', f'Deleted #{provider_id}', request.remote_addr)
+    
+    conn.close()
+    return jsonify({'success': True})
+
+# ==================== PROVIDER DASHBOARD ====================
+@app.route('/provider')
+@login_required
+def provider_dashboard():
+    conn = sqlite3.connect('payments.db')
+    c = conn.cursor()
+    
+    c.execute("SELECT * FROM providers WHERE user_id=?", (session['user_id'],))
+    provider = c.fetchone()
+    
+    if not provider:
+        return "Provider not found", 404
+    
+    provider_id = provider[0]
+    
+    c.execute("SELECT COUNT(*) FROM payments WHERE provider_id=?", (provider_id,))
+    total_payments = c.fetchone()[0]
+    
+    c.execute("""SELECT * FROM payments WHERE provider_id=? 
+               ORDER BY id DESC LIMIT 10""", (provider_id,))
+    recent_payments = c.fetchall()
+    
+    conn.close()
+    
+    return render_template_string('''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Provider Dashboard - PayBD</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { font-family: Arial; background: #f0f2f5; }
+            .sidebar { width: 250px; background: #2c3e50; height: 100vh; position: fixed; padding: 20px; }
+            .sidebar h2 { color: white; margin-bottom: 30px; }
+            .sidebar a { display: block; color: #ecf0f1; padding: 12px; text-decoration: none; border-radius: 5px; margin-bottom: 5px; }
+            .sidebar a:hover { background: #34495e; }
+            .main { margin-left: 250px; padding: 20px; }
+            .header { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
+            .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 20px; }
+            .stat-card { background: white; padding: 20px; border-radius: 10px; }
+            .stat-card h3 { color: #666; font-size: 14px; }
+            .stat-card p { font-size: 24px; font-weight: bold; color: #667eea; }
+            .api-section { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
+            .api-key-box { background: #f8f9fa; padding: 15px; border-radius: 5px; }
+            .api-key-box code { font-size: 14px; color: #d63384; word-break: break-all; }
+            .table-container { background: white; padding: 20px; border-radius: 10px; }
+            table { width: 100%; border-collapse: collapse; }
+            th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+            th { background: #667eea; color: white; }
+        </style>
+    </head>
+    <body>
+        <div class="sidebar">
+            <h2>🏪 Provider</h2>
+            <a href="/provider">📊 Dashboard</a>
+            <a href="/logout">🚪 Logout</a>
+        </div>
+        <div class="main">
+            <div class="header">
+                <h1>Welcome, {{ provider[2] }}!</h1>
+            </div>
+            <div class="stats">
+                <div class="stat-card">
+                    <h3>Balance</h3>
+                    <p>{{ provider[5] }} Tk</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Total Received</h3>
+                    <p>{{ provider[6] }} Tk</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Total Payments</h3>
+                    <p>{{ total_payments }}</p>
+                </div>
+            </div>
+            <div class="api-section">
+                <h3>🔑 আপনার API Key</h3>
+                <div class="api-key-box">
+                    <code>{{ provider[4] }}</code>
+                </div>
+                <p style="color: #666; margin-top: 10px;">এই API Key ব্যবহার করে ওয়েবসাইটে পেমেন্ট গ্রহণ করুন</p>
+            </div>
+            <div class="table-container">
+                <h3>Recent Payments</h3>
+                <table>
+                    <tr>
+                        <th>Transaction</th>
+                        <th>Amount</th>
+                        <th>Method</th>
+                        <th>Time</th>
+                    </tr>
+                    {% for p in recent_payments %}
+                    <tr>
+                        <td>{{ p[1] }}</td>
+                        <td>{{ p[2] }} Tk</td>
+                        <td>{{ p[3].upper() }}</td>
+                        <td>{{ p[7] }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+        </div>
+    </body>
+    </html>
+    ''', provider=provider, total_payments=total_payments, recent_payments=recent_payments)
 
 # ==================== API ENDPOINTS ====================
 @app.route('/api/v1/create-payment', methods=['POST'])
 def api_create_payment():
-    """যেকোনো ওয়েবসাইট থেকে পেমেন্ট তৈরি করুন"""
     try:
         api_key = request.headers.get('X-API-Key') or request.json.get('api_key', '')
         
@@ -585,7 +799,6 @@ def api_create_payment():
 
 @app.route('/api/v1/check-payment/<request_id>', methods=['GET'])
 def api_check_payment(request_id):
-    """পেমেন্ট স্ট্যাটাস চেক করুন"""
     conn = sqlite3.connect('payments.db')
     c = conn.cursor()
     c.execute("""SELECT status, matched_transaction_id, amount, method 
@@ -624,19 +837,16 @@ def receive_sms():
             conn = sqlite3.connect('payments.db')
             c = conn.cursor()
             
-            # Find provider by number
             c.execute("""SELECT id FROM providers 
                        WHERE nagad_number=? OR bkash_number=?""", (sender, sender))
             provider = c.fetchone()
             provider_id = provider[0] if provider else None
             
-            # Save payment
             c.execute("""INSERT INTO payments 
                        (transaction_id, amount, method, sender, provider_id, received_at)
                        VALUES (?, ?, ?, ?, ?, ?)""",
                       (transaction_id, amount, method, sender, provider_id, datetime.now()))
             
-            # Update provider
             if provider_id:
                 c.execute("""UPDATE providers 
                            SET balance = balance + ?, 
@@ -644,6 +854,20 @@ def receive_sms():
                                total_transactions = total_transactions + 1
                            WHERE id = ?""",
                           (amount, amount, provider_id))
+                
+                # Match pending requests
+                c.execute("""SELECT id FROM payment_requests 
+                           WHERE amount=? AND method=? AND status='pending'
+                           AND provider_id=? AND created_at > ?
+                           ORDER BY created_at DESC LIMIT 1""",
+                          (amount, method, provider_id, datetime.now() - timedelta(minutes=30)))
+                
+                pending = c.fetchone()
+                if pending:
+                    c.execute("""UPDATE payment_requests 
+                               SET status='completed', matched_transaction_id=?
+                               WHERE id=?""",
+                              (transaction_id, pending[0]))
             
             conn.commit()
             conn.close()
@@ -673,16 +897,14 @@ def payment_page(request_id):
     result = c.fetchone()
     
     if not result:
+        conn.close()
         return "Payment request not found", 404
     
     amount, method, status = result
     
     if status == 'completed':
-        return '''
-        <div style="text-align:center; margin-top:100px;">
-            <h1 style="color:green;">✅ Payment Already Completed!</h1>
-        </div>
-        '''
+        conn.close()
+        return '<div style="text-align:center;margin-top:100px;"><h1 style="color:green;">✅ Payment Already Completed!</h1></div>'
     
     c.execute("""SELECT p.nagad_number, p.bkash_number 
                FROM providers p
@@ -730,14 +952,11 @@ def payment_page(request_id):
                 navigator.clipboard.writeText('{payment_number}');
                 alert('নাম্বার কপি হয়েছে!');
             }}
-            
             async function verifyPayment() {{
                 const statusDiv = document.getElementById('status');
                 statusDiv.innerHTML = '⏳ চেক হচ্ছে...';
-                
                 const response = await fetch('/api/v1/check-payment/{request_id}');
                 const data = await response.json();
-                
                 if (data.is_completed) {{
                     statusDiv.innerHTML = '✅ পেমেন্ট সফল!<br>Transaction: ' + data.transaction_id;
                     statusDiv.style.color = '#28a745';
@@ -763,4 +982,4 @@ def home():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=True)
