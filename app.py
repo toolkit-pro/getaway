@@ -4,12 +4,16 @@ import re
 from datetime import datetime, timedelta
 import os
 import uuid
+import requests
 
 app = Flask(__name__)
 
-# আপনার নগদ/বিকাশ নাম্বার
-NAGAD_NUMBER = "017XXXXXXXX"  # আপনার নগদ নাম্বার দিন
-BKASH_NUMBER = "018XXXXXXXX"  # আপনার বিকাশ নাম্বার দিন
+# ============ CONFIGURATION ============
+NAGAD_NUMBER = "017XXXXXXXX"  # আপনার নগদ নাম্বার
+BKASH_NUMBER = "018XXXXXXXX"  # আপনার বিকাশ নাম্বার
+
+# API Key (আপনার ওয়েবসাইট থেকে আসবে)
+API_KEY = "your-secret-api-key-123"  # এই key দিয়ে API কল হবে
 
 def init_db():
     conn = sqlite3.connect('payments.db')
@@ -30,6 +34,8 @@ def init_db():
                   request_id TEXT UNIQUE,
                   amount REAL,
                   method TEXT,
+                  website_url TEXT,
+                  callback_url TEXT,
                   status TEXT DEFAULT 'pending',
                   created_at DATETIME,
                   matched_transaction_id TEXT)''')
@@ -39,7 +45,11 @@ def init_db():
 
 init_db()
 
-# ============ SMS রিসিভ করুন (MacroDroid থেকে) ============
+# ============ API KEY ভেরিফিকেশন ============
+def verify_api_key(api_key):
+    return api_key == API_KEY
+
+# ============ SMS রিসিভ (MacroDroid থেকে) ============
 @app.route('/api/sms', methods=['POST'])
 def receive_sms():
     data = request.json
@@ -53,40 +63,64 @@ def receive_sms():
         amount = float(amount_match.group(1).replace(',', ''))
         method = 'nagad' if 'nagad' in sms_text.lower() else 'bkash'
         
-        # পেমেন্ট সেভ করুন
         conn = sqlite3.connect('payments.db')
         c = conn.cursor()
+        
+        # পেমেন্ট সেভ করুন
         c.execute("INSERT INTO payments (transaction_id, amount, method, sender, received_at) VALUES (?, ?, ?, ?, ?)",
                   (transaction_id, amount, method, data.get('sender', ''), datetime.now()))
         conn.commit()
         
-        # পেন্ডিং রিকোয়েস্ট ম্যাচ করুন
-        c.execute("""SELECT id FROM payment_requests 
+        # পেন্ডিং রিকোয়েস্ট খুঁজুন
+        c.execute("""SELECT id, callback_url FROM payment_requests 
                    WHERE amount=? AND method=? AND status='pending'
                    AND created_at > ?
                    ORDER BY created_at DESC LIMIT 1""",
                   (amount, method, datetime.now() - timedelta(minutes=30)))
         
         result = c.fetchone()
+        
         if result:
+            request_id, callback_url = result
+            
+            # পেমেন্ট সম্পূর্ণ মার্ক করুন
             c.execute("""UPDATE payment_requests 
                        SET status='completed', matched_transaction_id=?
                        WHERE id=?""",
-                      (transaction_id, result[0]))
+                      (transaction_id, request_id))
             conn.commit()
+            
+            # Callback পাঠান (ওয়েবসাইটে নোটিফাই করুন)
+            if callback_url:
+                try:
+                    callback_data = {
+                        'status': 'completed',
+                        'transaction_id': transaction_id,
+                        'amount': amount
+                    }
+                    requests.post(callback_url, json=callback_data, timeout=5)
+                except:
+                    pass
         
         conn.close()
         
-        return jsonify({'success': True, 'message': 'Payment saved'})
+        return jsonify({'success': True, 'message': 'Payment received'})
     
     return jsonify({'success': False, 'error': 'No payment found'})
 
-# ============ পেমেন্ট রিকোয়েস্ট তৈরি করুন ============
+# ============ পেমেন্ট রিকোয়েস্ট তৈরি (ওয়েবসাইট থেকে) ============
 @app.route('/api/create-payment', methods=['POST'])
 def create_payment():
+    # API Key ভেরিফাই করুন
+    api_key = request.headers.get('X-API-Key', '')
+    if not verify_api_key(api_key):
+        return jsonify({'success': False, 'error': 'Invalid API Key'}), 401
+    
     data = request.json
     amount = float(data.get('amount', 0))
-    method = data.get('method', 'nagad')
+    method = data.get('method', 'nagad').lower()
+    website_url = data.get('website_url', '')
+    callback_url = data.get('callback_url', '')
     
     if amount < 10:
         return jsonify({'success': False, 'error': 'Minimum amount is 10 Taka'})
@@ -96,8 +130,10 @@ def create_payment():
     
     conn = sqlite3.connect('payments.db')
     c = conn.cursor()
-    c.execute("INSERT INTO payment_requests (request_id, amount, method, created_at) VALUES (?, ?, ?, ?)",
-              (request_id, amount, method, datetime.now()))
+    c.execute("""INSERT INTO payment_requests 
+               (request_id, amount, method, website_url, callback_url, created_at) 
+               VALUES (?, ?, ?, ?, ?, ?)""",
+              (request_id, amount, method, website_url, callback_url, datetime.now()))
     conn.commit()
     conn.close()
     
@@ -107,15 +143,176 @@ def create_payment():
         'payment_number': payment_number,
         'amount': amount,
         'method': method,
-        'message': f'Please send {amount} Taka to {payment_number} ({method.upper()})'
+        'payment_url': f'/pay/{request_id}',
+        'message': f'Please send {amount} Taka to {payment_number}'
     })
 
-# ============ পেমেন্ট স্ট্যাটাস চেক করুন ============
+# ============ পেমেন্ট পেজ (কাস্টমারের জন্য) ============
+@app.route('/pay/<request_id>')
+def payment_page(request_id):
+    conn = sqlite3.connect('payments.db')
+    c = conn.cursor()
+    c.execute("SELECT amount, method FROM payment_requests WHERE request_id=?", (request_id,))
+    result = c.fetchone()
+    conn.close()
+    
+    if not result:
+        return "Payment request not found", 404
+    
+    amount, method = result
+    payment_number = NAGAD_NUMBER if method == 'nagad' else BKASH_NUMBER
+    
+    return f'''
+    <!DOCTYPE html>
+    <html lang="bn">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Payment - {amount} Taka</title>
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{
+                font-family: Arial, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                padding: 20px;
+            }}
+            .payment-card {{
+                background: white;
+                border-radius: 15px;
+                padding: 30px;
+                max-width: 400px;
+                width: 100%;
+                box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            }}
+            h2 {{ text-align: center; color: #333; margin-bottom: 20px; }}
+            .amount-display {{
+                text-align: center;
+                font-size: 36px;
+                font-weight: bold;
+                color: #667eea;
+                margin-bottom: 10px;
+            }}
+            .method-display {{
+                text-align: center;
+                color: #666;
+                margin-bottom: 20px;
+                font-size: 18px;
+            }}
+            .number-box {{
+                background: #fff3cd;
+                padding: 15px;
+                border-radius: 8px;
+                text-align: center;
+                font-size: 24px;
+                font-weight: bold;
+                color: #856404;
+                margin-bottom: 20px;
+            }}
+            .copy-btn {{
+                width: 100%;
+                padding: 12px;
+                background: #007bff;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                cursor: pointer;
+                margin-bottom: 20px;
+            }}
+            .verify-btn {{
+                width: 100%;
+                padding: 14px;
+                background: #28a745;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 16px;
+                font-weight: bold;
+                cursor: pointer;
+            }}
+            .status {{
+                text-align: center;
+                margin-top: 15px;
+                font-weight: bold;
+                display: none;
+            }}
+            .spinner {{
+                display: inline-block;
+                width: 20px;
+                height: 20px;
+                border: 3px solid #f3f3f3;
+                border-top: 3px solid #28a745;
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+                vertical-align: middle;
+                margin-right: 10px;
+            }}
+            @keyframes spin {{
+                0% {{ transform: rotate(0deg); }}
+                100% {{ transform: rotate(360deg); }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="payment-card">
+            <h2>💰 পেমেন্ট করুন</h2>
+            <div class="amount-display">{amount} টাকা</div>
+            <div class="method-display">Method: {method.upper()}</div>
+            
+            <p style="text-align:center; margin-bottom:10px;">সেন্ড মানি করুন এই নাম্বারে:</p>
+            <div class="number-box">{payment_number}</div>
+            
+            <button class="copy-btn" onclick="copyNumber()">📋 নাম্বার কপি করুন</button>
+            
+            <p style="text-align:center; margin-bottom:10px;">টাকা পাঠানোর পর চাপুন:</p>
+            <button class="verify-btn" onclick="verifyPayment()">✓ পেমেন্ট ভেরিফাই করুন</button>
+            
+            <div class="status" id="status"></div>
+        </div>
+        
+        <script>
+            function copyNumber() {{
+                navigator.clipboard.writeText('{payment_number}');
+                alert('নাম্বার কপি হয়েছে!');
+            }}
+            
+            async function verifyPayment() {{
+                const statusDiv = document.getElementById('status');
+                statusDiv.style.display = 'block';
+                statusDiv.innerHTML = '<span class="spinner"></span> পেমেন্ট চেক হচ্ছে...';
+                
+                try {{
+                    const response = await fetch('/api/check-payment/{request_id}');
+                    const data = await response.json();
+                    
+                    if (data.is_completed) {{
+                        statusDiv.innerHTML = '✅ পেমেন্ট সফল!<br>Transaction: ' + data.transaction_id;
+                        statusDiv.style.color = '#28a745';
+                    }} else {{
+                        statusDiv.innerHTML = '⏳ এখনো পেমেন্ট পাওয়া যায়নি';
+                        statusDiv.style.color = '#ffc107';
+                        setTimeout(verifyPayment, 5000);
+                    }}
+                }} catch (error) {{
+                    statusDiv.innerHTML = '❌ Server error';
+                    statusDiv.style.color = '#dc3545';
+                }}
+            }}
+        </script>
+    </body>
+    </html>
+    '''
+
+# ============ পেমেন্ট স্ট্যাটাস চেক ============
 @app.route('/api/check-payment/<request_id>')
 def check_payment(request_id):
     conn = sqlite3.connect('payments.db')
     c = conn.cursor()
-    c.execute("SELECT status, matched_transaction_id FROM payment_requests WHERE request_id=?", (request_id,))
+    c.execute("SELECT status, matched_transaction_id, amount FROM payment_requests WHERE request_id=?", (request_id,))
     result = c.fetchone()
     conn.close()
     
@@ -124,276 +321,49 @@ def check_payment(request_id):
             'success': True,
             'status': result[0],
             'transaction_id': result[1],
+            'amount': result[2],
             'is_completed': result[0] == 'completed'
         })
     
     return jsonify({'success': False, 'error': 'Request not found'})
 
-# ============ সব পেমেন্ট দেখুন ============
-@app.route('/api/payments')
-def get_payments():
+# ============ Webhook Receiver (ওয়েবসাইট থেকে পেমেন্ট রিকোয়েস্ট) ============
+@app.route('/webhook/create-payment', methods=['POST'])
+def webhook_create_payment():
+    """আপনার ওয়েবসাইট থেকে পেমেন্ট রিকোয়েস্ট গ্রহণ করুন"""
+    
+    # API Key ভেরিফাই করুন
+    api_key = request.headers.get('X-API-Key', '')
+    if not verify_api_key(api_key):
+        return jsonify({'success': False, 'error': 'Invalid API Key'}), 401
+    
+    data = request.json
+    amount = data.get('amount')
+    method = data.get('method', 'nagad')
+    order_id = data.get('order_id', '')
+    customer_phone = data.get('customer_phone', '')
+    callback_url = data.get('callback_url', '')
+    
+    # পেমেন্ট রিকোয়েস্ট তৈরি করুন
+    request_id = f"REQ{uuid.uuid4().hex[:10].upper()}"
+    payment_number = NAGAD_NUMBER if method == 'nagad' else BKASH_NUMBER
+    
     conn = sqlite3.connect('payments.db')
     c = conn.cursor()
-    c.execute("SELECT * FROM payments ORDER BY id DESC LIMIT 50")
-    payments = c.fetchall()
+    c.execute("""INSERT INTO payment_requests 
+               (request_id, amount, method, website_url, callback_url, created_at) 
+               VALUES (?, ?, ?, ?, ?, ?)""",
+              (request_id, amount, method, order_id, callback_url, datetime.now()))
+    conn.commit()
     conn.close()
     
-    payment_list = []
-    for p in payments:
-        payment_list.append({
-            'transaction_id': p[1],
-            'amount': p[2],
-            'method': p[3],
-            'sender': p[4],
-            'received_at': p[5]
-        })
-    
-    return jsonify({'payments': payment_list})
-
-# ============ পেমেন্ট পেজ ============
-@app.route('/pay')
-def payment_page():
-    return '''
-    <!DOCTYPE html>
-    <html lang="bn">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Payment Gateway</title>
-        <style>
-            * { margin: 0; padding: 0; box-sizing: border-box; }
-            body {
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                min-height: 100vh;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                padding: 20px;
-            }
-            .payment-box {
-                background: white;
-                border-radius: 15px;
-                padding: 30px;
-                max-width: 400px;
-                width: 100%;
-                box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            }
-            h2 {
-                text-align: center;
-                color: #333;
-                margin-bottom: 10px;
-            }
-            .subtitle {
-                text-align: center;
-                color: #666;
-                margin-bottom: 20px;
-                font-size: 14px;
-            }
-            .form-group {
-                margin-bottom: 15px;
-            }
-            label {
-                display: block;
-                margin-bottom: 5px;
-                color: #555;
-                font-weight: 600;
-                font-size: 14px;
-            }
-            input, select {
-                width: 100%;
-                padding: 12px;
-                border: 2px solid #ddd;
-                border-radius: 8px;
-                font-size: 16px;
-                transition: border-color 0.3s;
-            }
-            input:focus, select:focus {
-                outline: none;
-                border-color: #667eea;
-            }
-            .pay-btn {
-                width: 100%;
-                padding: 14px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                border: none;
-                border-radius: 8px;
-                font-size: 16px;
-                font-weight: bold;
-                cursor: pointer;
-                transition: transform 0.2s;
-            }
-            .pay-btn:hover {
-                transform: translateY(-2px);
-            }
-            .pay-btn:disabled {
-                opacity: 0.6;
-                cursor: not-allowed;
-            }
-            .instructions {
-                background: #f8f9fa;
-                padding: 15px;
-                border-radius: 8px;
-                margin-top: 20px;
-                display: none;
-            }
-            .instructions h3 {
-                color: #333;
-                margin-bottom: 10px;
-                font-size: 16px;
-            }
-            .number-box {
-                background: #fff3cd;
-                padding: 12px;
-                border-radius: 6px;
-                text-align: center;
-                font-size: 20px;
-                font-weight: bold;
-                color: #856404;
-                margin-bottom: 10px;
-            }
-            .verify-btn {
-                width: 100%;
-                padding: 12px;
-                background: #28a745;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                font-size: 14px;
-                cursor: pointer;
-                margin-top: 10px;
-            }
-            .status {
-                text-align: center;
-                margin-top: 15px;
-                font-weight: bold;
-                display: none;
-            }
-            .success {
-                color: #28a745;
-            }
-            .pending {
-                color: #ffc107;
-            }
-            .error {
-                color: #dc3545;
-            }
-            .spinner {
-                display: inline-block;
-                width: 20px;
-                height: 20px;
-                border: 3px solid #f3f3f3;
-                border-top: 3px solid #28a745;
-                border-radius: 50%;
-                animation: spin 1s linear infinite;
-                margin-right: 10px;
-                vertical-align: middle;
-            }
-            @keyframes spin {
-                0% { transform: rotate(0deg); }
-                100% { transform: rotate(360deg); }
-            }
-        </style>
-    </head>
-    <body>
-        <div class="payment-box">
-            <h2>💰 পেমেন্ট করুন</h2>
-            <p class="subtitle">নগদ/বিকাশে পেমেন্ট করুন</p>
-            
-            <div class="form-group">
-                <label>পেমেন্টের পরিমাণ (টাকা)</label>
-                <input type="number" id="amount" min="10" placeholder="যেমন: 500">
-            </div>
-            
-            <div class="form-group">
-                <label>পেমেন্ট মাধ্যম</label>
-                <select id="method">
-                    <option value="nagad">নগদ (Personal)</option>
-                    <option value="bkash">বিকাশ (Personal)</option>
-                </select>
-            </div>
-            
-            <button class="pay-btn" onclick="createPayment()">পেমেন্ট করুন</button>
-            
-            <div class="instructions" id="instructions">
-                <h3>📱 সেন্ড মানি করুন</h3>
-                <p>নিচের নাম্বারে টাকা পাঠান:</p>
-                <div class="number-box" id="paymentNumber"></div>
-                <p>টাকা পাঠানোর পর "Verify" বাটনে চাপুন</p>
-                <button class="verify-btn" onclick="verifyPayment()">✓ Verify Payment</button>
-            </div>
-            
-            <div class="status" id="status"></div>
-        </div>
-        
-        <script>
-            let currentRequestId = null;
-            const API_BASE = window.location.origin;
-            
-            async function createPayment() {
-                const amount = document.getElementById('amount').value;
-                const method = document.getElementById('method').value;
-                
-                if (!amount || amount < 10) {
-                    alert('সর্বনিম্ন ১০ টাকা পেমেন্ট করতে হবে');
-                    return;
-                }
-                
-                try {
-                    const response = await fetch(API_BASE + '/api/create-payment', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({amount: amount, method: method})
-                    });
-                    
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        currentRequestId = data.request_id;
-                        document.getElementById('paymentNumber').textContent = data.payment_number;
-                        document.getElementById('instructions').style.display = 'block';
-                        document.querySelector('.pay-btn').disabled = true;
-                    } else {
-                        alert('Error: ' + data.error);
-                    }
-                } catch (error) {
-                    alert('Server error. Please try again.');
-                }
-            }
-            
-            async function verifyPayment() {
-                if (!currentRequestId) return;
-                
-                const statusDiv = document.getElementById('status');
-                statusDiv.style.display = 'block';
-                statusDiv.className = 'status pending';
-                statusDiv.innerHTML = '<span class="spinner"></span> পেমেন্ট ভেরিফাই হচ্ছে...';
-                
-                try {
-                    const response = await fetch(API_BASE + '/api/check-payment/' + currentRequestId);
-                    const data = await response.json();
-                    
-                    if (data.is_completed) {
-                        statusDiv.className = 'status success';
-                        statusDiv.innerHTML = '✅ পেমেন্ট সফল হয়েছে!<br>Transaction ID: ' + data.transaction_id;
-                        document.getElementById('instructions').style.display = 'none';
-                    } else {
-                        statusDiv.className = 'status pending';
-                        statusDiv.innerHTML = '⏳ পেমেন্ট পাওয়া যায়নি। আবার চেষ্টা করুন';
-                        
-                        // ৫ সেকেন্ড পর আবার চেক করুন
-                        setTimeout(verifyPayment, 5000);
-                    }
-                } catch (error) {
-                    statusDiv.className = 'status error';
-                    statusDiv.innerHTML = '❌ Server error';
-                }
-            }
-        </script>
-    </body>
-    </html>
-    '''
+    return jsonify({
+        'success': True,
+        'request_id': request_id,
+        'payment_number': payment_number,
+        'amount': amount,
+        'payment_url': f'https://your-app.onrender.com/pay/{request_id}'
+    })
 
 # ============ ড্যাশবোর্ড ============
 @app.route('/')
@@ -421,7 +391,6 @@ def dashboard():
             .header {
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                 color: white; padding: 30px; border-radius: 10px; margin-bottom: 20px;
-                display: flex; justify-content: space-between; align-items: center;
             }
             .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
             .stat-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
@@ -432,21 +401,13 @@ def dashboard():
             th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
             th { background: #667eea; color: white; }
             tr:hover { background: #f8f9fa; }
-            .pay-link {
-                background: #28a745; color: white; padding: 10px 20px;
-                border-radius: 5px; text-decoration: none; font-weight: bold;
-            }
-            .pay-link:hover { background: #218838; }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
-                <div>
-                    <h1>💰 Payment Dashboard</h1>
-                    <p>Real-time payment monitoring</p>
-                </div>
-                <a href="/pay" class="pay-link">💳 Payment Page</a>
+                <h1>💰 Payment Dashboard</h1>
+                <p>Real-time payment monitoring</p>
             </div>
             
             <div class="stats">
